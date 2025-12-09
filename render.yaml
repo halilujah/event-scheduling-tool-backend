@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: event-scheduling-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -k eventlet -w 1 --bind 0.0.0.0:$PORT main:app
+    envVars:
+      - key: FLASK_ENV
+        value: production
+    plan: free
