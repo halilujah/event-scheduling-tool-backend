@@ -56,46 +56,71 @@ def get_client_ip():
 
 """connect = sqlite3.connect("database.db")
 connect.execute("DROP TABLE USERS")"""
-connect = sqlite3.connect("database.db")
-connect.execute("CREATE TABLE IF NOT EXISTS USERS (userId TEXT, name TEXT, surname TEXT, email TEXT, password TEXT)")
-connect.execute("""CREATE TABLE IF NOT EXISTS EVENTS (
-    eventId TEXT PRIMARY KEY,
-    title TEXT,
-    type TEXT,
-    selectedDates TEXT,
-    selectedDays TEXT,
-    startTime TEXT,
-    endTime TEXT,
-    timezone TEXT,
-    organizerName TEXT,
-    isFinalized INTEGER DEFAULT 0,
-    finalizedTime TEXT,
-    createdAt TEXT
-)""")
-connect.execute("""CREATE TABLE IF NOT EXISTS PARTICIPANTS (
-    participantId TEXT PRIMARY KEY,
-    eventId TEXT,
-    name TEXT,
-    ipAddress TEXT,
-    joinedAt TEXT,
-    FOREIGN KEY (eventId) REFERENCES EVENTS(eventId)
-)""")
-connect.execute("""CREATE TABLE IF NOT EXISTS VOTES (
-    voteId TEXT PRIMARY KEY,
-    eventId TEXT,
-    participantId TEXT,
-    timeSlot TEXT,
-    FOREIGN KEY (eventId) REFERENCES EVENTS(eventId),
-    FOREIGN KEY (participantId) REFERENCES PARTICIPANTS(participantId)
-)""")
-connect.execute("""CREATE TABLE IF NOT EXISTS BLOCKED_USERS (
-    blockId TEXT PRIMARY KEY,
-    eventId TEXT,
-    ipAddress TEXT,
-    participantName TEXT,
-    blockedAt TEXT,
-    FOREIGN KEY (eventId) REFERENCES EVENTS(eventId)
-)""")
+
+# Database initialization and migration
+def init_database():
+    """Initialize database tables and run migrations"""
+    connect = sqlite3.connect("database.db")
+    cursor = connect.cursor()
+
+    # Create base tables
+    cursor.execute("CREATE TABLE IF NOT EXISTS USERS (userId TEXT, name TEXT, surname TEXT, email TEXT, password TEXT)")
+
+    cursor.execute("""CREATE TABLE IF NOT EXISTS EVENTS (
+        eventId TEXT PRIMARY KEY,
+        title TEXT,
+        type TEXT,
+        selectedDates TEXT,
+        selectedDays TEXT,
+        startTime TEXT,
+        endTime TEXT,
+        timezone TEXT,
+        organizerName TEXT,
+        isFinalized INTEGER DEFAULT 0,
+        finalizedTime TEXT,
+        createdAt TEXT
+    )""")
+
+    # Create PARTICIPANTS table (without ipAddress initially for migration)
+    cursor.execute("""CREATE TABLE IF NOT EXISTS PARTICIPANTS (
+        participantId TEXT PRIMARY KEY,
+        eventId TEXT,
+        name TEXT,
+        joinedAt TEXT,
+        FOREIGN KEY (eventId) REFERENCES EVENTS(eventId)
+    )""")
+
+    # Check if ipAddress column exists in PARTICIPANTS
+    cursor.execute("PRAGMA table_info(PARTICIPANTS)")
+    participant_columns = [row[1] for row in cursor.fetchall()]
+    if 'ipAddress' not in participant_columns:
+        print("Running migration: Adding ipAddress column to PARTICIPANTS...")
+        cursor.execute("ALTER TABLE PARTICIPANTS ADD COLUMN ipAddress TEXT DEFAULT '0.0.0.0'")
+        print("✓ Migration completed")
+
+    cursor.execute("""CREATE TABLE IF NOT EXISTS VOTES (
+        voteId TEXT PRIMARY KEY,
+        eventId TEXT,
+        participantId TEXT,
+        timeSlot TEXT,
+        FOREIGN KEY (eventId) REFERENCES EVENTS(eventId),
+        FOREIGN KEY (participantId) REFERENCES PARTICIPANTS(participantId)
+    )""")
+
+    cursor.execute("""CREATE TABLE IF NOT EXISTS BLOCKED_USERS (
+        blockId TEXT PRIMARY KEY,
+        eventId TEXT,
+        ipAddress TEXT,
+        participantName TEXT,
+        blockedAt TEXT,
+        FOREIGN KEY (eventId) REFERENCES EVENTS(eventId)
+    )""")
+
+    connect.commit()
+    connect.close()
+
+# Run database initialization
+init_database()
 
 
 @app.route("/createUser", methods=["POST"])
