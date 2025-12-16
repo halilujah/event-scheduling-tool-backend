@@ -43,6 +43,16 @@ def get_unique_event_id():
             if not cursor.fetchone():
                 return event_id
 
+def get_client_ip():
+    """Get the client's IP address from the request"""
+    # Try to get the real IP from headers (in case behind proxy)
+    if request.headers.get('X-Forwarded-For'):
+        return request.headers.get('X-Forwarded-For').split(',')[0].strip()
+    elif request.headers.get('X-Real-IP'):
+        return request.headers.get('X-Real-IP')
+    else:
+        return request.remote_addr
+
 
 """connect = sqlite3.connect("database.db")
 connect.execute("DROP TABLE USERS")"""
@@ -66,6 +76,7 @@ connect.execute("""CREATE TABLE IF NOT EXISTS PARTICIPANTS (
     participantId TEXT PRIMARY KEY,
     eventId TEXT,
     name TEXT,
+    ipAddress TEXT,
     joinedAt TEXT,
     FOREIGN KEY (eventId) REFERENCES EVENTS(eventId)
 )""")
@@ -76,6 +87,14 @@ connect.execute("""CREATE TABLE IF NOT EXISTS VOTES (
     timeSlot TEXT,
     FOREIGN KEY (eventId) REFERENCES EVENTS(eventId),
     FOREIGN KEY (participantId) REFERENCES PARTICIPANTS(participantId)
+)""")
+connect.execute("""CREATE TABLE IF NOT EXISTS BLOCKED_USERS (
+    blockId TEXT PRIMARY KEY,
+    eventId TEXT,
+    ipAddress TEXT,
+    participantName TEXT,
+    blockedAt TEXT,
+    FOREIGN KEY (eventId) REFERENCES EVENTS(eventId)
 )""")
 
 
@@ -198,10 +217,10 @@ def get_event(event_id):
 def get_participants(event_id):
     with sqlite3.connect("database.db") as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT participantId, name, joinedAt FROM PARTICIPANTS WHERE eventId = ?", (event_id,))
+        cursor.execute("SELECT participantId, name, ipAddress, joinedAt FROM PARTICIPANTS WHERE eventId = ?", (event_id,))
         rows = cursor.fetchall()
 
-        participants = [{"participantId": row[0], "name": row[1], "joinedAt": row[2]} for row in rows]
+        participants = [{"participantId": row[0], "name": row[1], "ipAddress": row[2], "joinedAt": row[3]} for row in rows]
         return jsonify(participants), 200
 
 
@@ -209,15 +228,25 @@ def get_participants(event_id):
 def add_participant(event_id):
     if request.is_json:
         payload = dict(request.get_json())
-        participant_id = str(uuid.uuid4())
         name = payload.get("name")
+        ip_address = get_client_ip()
         joined_at = datetime.utcnow().isoformat()
 
         with sqlite3.connect("database.db") as conn:
             cursor = conn.cursor()
+
+            # Check if this IP is blocked for this event
             cursor.execute(
-                "INSERT INTO PARTICIPANTS (participantId, eventId, name, joinedAt) VALUES (?, ?, ?, ?)",
-                (participant_id, event_id, name, joined_at)
+                "SELECT blockId FROM BLOCKED_USERS WHERE eventId = ? AND ipAddress = ?",
+                (event_id, ip_address)
+            )
+            if cursor.fetchone():
+                return jsonify({"error": "You have been blocked from this event"}), 403
+
+            participant_id = str(uuid.uuid4())
+            cursor.execute(
+                "INSERT INTO PARTICIPANTS (participantId, eventId, name, ipAddress, joinedAt) VALUES (?, ?, ?, ?, ?)",
+                (participant_id, event_id, name, ip_address, joined_at)
             )
             conn.commit()
 
@@ -225,6 +254,7 @@ def add_participant(event_id):
         socketio.emit('participant_joined', {
             'participantId': participant_id,
             'name': name,
+            'ipAddress': ip_address,
             'joinedAt': joined_at
         }, room=event_id)
 
@@ -303,6 +333,89 @@ def finalize_event(event_id):
         }, room=event_id)
 
         return jsonify({"message": "Event finalized successfully", "finalizedTime": finalized_time}), 200
+    else:
+        return jsonify({"error": "Request body must be json"}), 400
+
+
+@app.route("/events/<event_id>/participants/<participant_id>/votes", methods=["GET"])
+def get_participant_votes(event_id, participant_id):
+    """Get votes for a specific participant"""
+    with sqlite3.connect("database.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT timeSlot FROM VOTES WHERE eventId = ? AND participantId = ?",
+            (event_id, participant_id)
+        )
+        rows = cursor.fetchall()
+
+        time_slots = [row[0] for row in rows]
+        return jsonify({"timeSlots": time_slots}), 200
+
+
+@app.route("/events/<event_id>/block", methods=["POST"])
+def block_user(event_id):
+    """Block a user from an event by their IP address"""
+    if request.is_json:
+        payload = dict(request.get_json())
+        participant_id = payload.get("participantId")
+
+        if not participant_id:
+            return jsonify({"error": "participantId is required"}), 400
+
+        with sqlite3.connect("database.db") as conn:
+            cursor = conn.cursor()
+
+            # Get participant's IP address and name
+            cursor.execute(
+                "SELECT ipAddress, name FROM PARTICIPANTS WHERE participantId = ? AND eventId = ?",
+                (participant_id, event_id)
+            )
+            participant = cursor.fetchone()
+
+            if not participant:
+                return jsonify({"error": "Participant not found"}), 404
+
+            ip_address = participant[0]
+            participant_name = participant[1]
+
+            # Check if already blocked
+            cursor.execute(
+                "SELECT blockId FROM BLOCKED_USERS WHERE eventId = ? AND ipAddress = ?",
+                (event_id, ip_address)
+            )
+            if cursor.fetchone():
+                return jsonify({"error": "User is already blocked"}), 400
+
+            # Add to blocked users
+            block_id = str(uuid.uuid4())
+            blocked_at = datetime.utcnow().isoformat()
+            cursor.execute(
+                "INSERT INTO BLOCKED_USERS (blockId, eventId, ipAddress, participantName, blockedAt) VALUES (?, ?, ?, ?, ?)",
+                (block_id, event_id, ip_address, participant_name, blocked_at)
+            )
+
+            # Delete all participants with this IP from this event
+            cursor.execute(
+                "DELETE FROM PARTICIPANTS WHERE eventId = ? AND ipAddress = ?",
+                (event_id, ip_address)
+            )
+
+            # Delete all votes from participants with this IP
+            cursor.execute(
+                "DELETE FROM VOTES WHERE eventId = ? AND participantId IN (SELECT participantId FROM PARTICIPANTS WHERE ipAddress = ?)",
+                (event_id, ip_address)
+            )
+
+            conn.commit()
+
+        # Emit WebSocket event to notify all clients
+        socketio.emit('user_blocked', {
+            'participantId': participant_id,
+            'participantName': participant_name,
+            'ipAddress': ip_address
+        }, room=event_id)
+
+        return jsonify({"message": "User blocked successfully"}), 200
     else:
         return jsonify({"error": "Request body must be json"}), 400
 
