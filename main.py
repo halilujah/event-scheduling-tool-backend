@@ -419,15 +419,23 @@ def block_user(event_id):
                 (block_id, event_id, ip_address, participant_name, blocked_at)
             )
 
+            # Get all participant IDs with this IP before deletion
+            cursor.execute(
+                "SELECT participantId FROM PARTICIPANTS WHERE eventId = ? AND ipAddress = ?",
+                (event_id, ip_address)
+            )
+            participant_ids = [row[0] for row in cursor.fetchall()]
+
+            # Delete all votes from participants with this IP
+            for pid in participant_ids:
+                cursor.execute(
+                    "DELETE FROM VOTES WHERE eventId = ? AND participantId = ?",
+                    (event_id, pid)
+                )
+
             # Delete all participants with this IP from this event
             cursor.execute(
                 "DELETE FROM PARTICIPANTS WHERE eventId = ? AND ipAddress = ?",
-                (event_id, ip_address)
-            )
-
-            # Delete all votes from participants with this IP
-            cursor.execute(
-                "DELETE FROM VOTES WHERE eventId = ? AND participantId IN (SELECT participantId FROM PARTICIPANTS WHERE ipAddress = ?)",
                 (event_id, ip_address)
             )
 
