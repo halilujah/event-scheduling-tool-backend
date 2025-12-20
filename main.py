@@ -10,6 +10,9 @@ import string
 from datetime import datetime
 import os
 
+# Configure database path (can be overridden via environment variable)
+DB_PATH = os.environ.get("DB_PATH", "database.db")
+
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*")
@@ -35,7 +38,7 @@ def generate_short_id(length=6):
 
 def get_unique_event_id():
     """Generate a unique short event ID"""
-    with sqlite3.connect("database.db") as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         while True:
             event_id = generate_short_id(6)
@@ -60,7 +63,7 @@ connect.execute("DROP TABLE USERS")"""
 # Database initialization and migration
 def init_database():
     """Initialize database tables and run migrations"""
-    connect = sqlite3.connect("database.db")
+    connect = sqlite3.connect(DB_PATH)
     cursor = connect.cursor()
 
     # Create base tables
@@ -132,7 +135,7 @@ def create_user():
         surname = payload.get("surname")
         email = payload.get("email")
         password = sha256(str(payload.get("password")).encode("utf-8")).hexdigest()
-        with sqlite3.connect("database.db") as users:
+        with sqlite3.connect(DB_PATH) as users:
             cursor = users.cursor()
             cursor.execute(
                 "INSERT INTO USERS (userId, name, surname, email, password) VALUES (?, ?, ?, ?, ?)",
@@ -146,7 +149,7 @@ def create_user():
 
 @app.route("/users", methods=["GET"])
 def get_users():
-    connect = sqlite3.connect("database.db")
+    connect = sqlite3.connect(DB_PATH)
     cursor = connect.cursor()
     cursor.execute("SELECT name, surname, email FROM USERS")
 
@@ -161,7 +164,7 @@ def login():
         email = payload.get("email")
         password_from_user = sha256(str(payload.get("password")).encode("utf-8")).hexdigest()
 
-        connect = sqlite3.connect("database.db")
+        connect = sqlite3.connect(DB_PATH)
         cursor = connect.cursor()
         cursor.execute("SELECT userId, password FROM USERS WHERE email = ?", (email,))
         data = cursor.fetchall()
@@ -193,7 +196,7 @@ def create_event():
         organizer_name = payload.get("organizerName", "Anonymous")
         created_at = datetime.utcnow().isoformat()
 
-        with sqlite3.connect("database.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """INSERT INTO EVENTS (eventId, title, type, selectedDates, selectedDays, startTime, endTime, timezone, organizerName, isFinalized, finalizedTime, createdAt)
@@ -209,7 +212,7 @@ def create_event():
 
 @app.route("/events/<event_id>", methods=["GET"])
 def get_event(event_id):
-    with sqlite3.connect("database.db") as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT eventId, title, type, selectedDates, selectedDays, startTime, endTime, timezone,
@@ -240,7 +243,7 @@ def get_event(event_id):
 
 @app.route("/events/<event_id>/participants", methods=["GET"])
 def get_participants(event_id):
-    with sqlite3.connect("database.db") as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT participantId, name, ipAddress, joinedAt FROM PARTICIPANTS WHERE eventId = ?", (event_id,))
         rows = cursor.fetchall()
@@ -257,7 +260,7 @@ def add_participant(event_id):
         ip_address = get_client_ip()
         joined_at = datetime.utcnow().isoformat()
 
-        with sqlite3.connect("database.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
 
             # Check if this IP is blocked for this event
@@ -290,7 +293,7 @@ def add_participant(event_id):
 
 @app.route("/events/<event_id>/votes", methods=["GET"])
 def get_votes(event_id):
-    with sqlite3.connect("database.db") as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT voteId, participantId, timeSlot FROM VOTES WHERE eventId = ?", (event_id,))
         rows = cursor.fetchall()
@@ -306,7 +309,7 @@ def add_vote(event_id):
         participant_id = payload.get("participantId")
         time_slots = payload.get("timeSlots", [])
 
-        with sqlite3.connect("database.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             # Delete existing votes for this participant
             cursor.execute("DELETE FROM VOTES WHERE eventId = ? AND participantId = ?", (event_id, participant_id))
@@ -344,7 +347,7 @@ def finalize_event(event_id):
         if not finalized_time:
             return jsonify({"error": "finalizedTime is required"}), 400
 
-        with sqlite3.connect("database.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "UPDATE EVENTS SET isFinalized = 1, finalizedTime = ? WHERE eventId = ?",
@@ -365,7 +368,7 @@ def finalize_event(event_id):
 @app.route("/events/<event_id>/participants/<participant_id>/votes", methods=["GET"])
 def get_participant_votes(event_id, participant_id):
     """Get votes for a specific participant"""
-    with sqlite3.connect("database.db") as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute(
             "SELECT timeSlot FROM VOTES WHERE eventId = ? AND participantId = ?",
@@ -387,7 +390,7 @@ def block_user(event_id):
         if not participant_id:
             return jsonify({"error": "participantId is required"}), 400
 
-        with sqlite3.connect("database.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
 
             # Get participant's IP address and name
