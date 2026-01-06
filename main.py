@@ -81,7 +81,9 @@ def init_database():
         organizerName TEXT,
         isFinalized INTEGER DEFAULT 0,
         finalizedTime TEXT,
-        createdAt TEXT
+        createdAt TEXT,
+        votingDeadline TEXT,
+        deadlineTimezone TEXT
     )""")
 
     # Create PARTICIPANTS table (without ipAddress initially for migration)
@@ -195,13 +197,18 @@ def create_event():
         timezone = payload.get("timezone", "UTC")
         organizer_name = payload.get("organizerName", "Anonymous")
         created_at = datetime.utcnow().isoformat()
+        voting_deadline = payload.get("votingDeadline")  # Optional ISO timestamp in UTC
+        deadline_timezone = payload.get("deadlineTimezone")  # Optional organizer's timezone
+
+        print(f"[DEBUG] Creating event with deadline: {voting_deadline}, timezone: {deadline_timezone}")
+        print(f"[DEBUG] Full payload: {payload}")
 
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """INSERT INTO EVENTS (eventId, title, type, selectedDates, selectedDays, startTime, endTime, timezone, organizerName, isFinalized, finalizedTime, createdAt)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)""",
-                (event_id, title, event_type, selected_dates, selected_days, start_time, end_time, timezone, organizer_name, created_at)
+                """INSERT INTO EVENTS (eventId, title, type, selectedDates, selectedDays, startTime, endTime, timezone, organizerName, isFinalized, finalizedTime, createdAt, votingDeadline, deadlineTimezone)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?)""",
+                (event_id, title, event_type, selected_dates, selected_days, start_time, end_time, timezone, organizer_name, created_at, voting_deadline, deadline_timezone)
             )
             conn.commit()
 
@@ -216,7 +223,7 @@ def get_event(event_id):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT eventId, title, type, selectedDates, selectedDays, startTime, endTime, timezone,
-                   organizerName, isFinalized, finalizedTime, createdAt
+                   organizerName, isFinalized, finalizedTime, createdAt, votingDeadline, deadlineTimezone
             FROM EVENTS WHERE eventId = ?
         """, (event_id,))
         row = cursor.fetchone()
@@ -234,7 +241,9 @@ def get_event(event_id):
                 "organizerName": row[8],
                 "isFinalized": bool(row[9]),
                 "finalizedTime": row[10],
-                "createdAt": row[11]
+                "createdAt": row[11],
+                "votingDeadline": row[12],
+                "deadlineTimezone": row[13]
             }
             return jsonify(event), 200
         else:
@@ -311,6 +320,34 @@ def add_vote(event_id):
 
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
+
+            # Check event status and deadline
+            cursor.execute(
+                "SELECT votingDeadline, isFinalized FROM EVENTS WHERE eventId = ?",
+                (event_id,)
+            )
+            event_data = cursor.fetchone()
+
+            if not event_data:
+                return jsonify({"error": "Event not found"}), 404
+
+            voting_deadline, is_finalized = event_data
+
+            # Check if event is finalized
+            if is_finalized:
+                return jsonify({"error": "Voting is closed - event has been finalized"}), 403
+
+            # Check if voting deadline has passed
+            if voting_deadline:
+                try:
+                    deadline_dt = datetime.fromisoformat(voting_deadline.replace('Z', '+00:00'))
+                    now_utc = datetime.utcnow()
+
+                    if now_utc > deadline_dt:
+                        return jsonify({"error": "Voting deadline has passed"}), 403
+                except Exception as e:
+                    print(f"Error parsing deadline: {e}")
+
             # Delete existing votes for this participant
             cursor.execute("DELETE FROM VOTES WHERE eventId = ? AND participantId = ?", (event_id, participant_id))
 
